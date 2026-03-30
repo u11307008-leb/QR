@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>QR Code 影音互動遊戲 - 隱私保護版</title>
+    <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
+    <style>
+        body { font-family: sans-serif; text-align: center; background: #f0f2f5; margin: 0; padding: 20px; }
+        #container { max-width: 500px; margin: auto; background: white; padding: 20px; border-radius: 15px; box-shadow: 0 4px 10px rgba(0,0,0,0.1); }
+        
+        /* 開始畫面 */
+        #start-screen { padding: 40px 0; }
+        #start-btn { padding: 15px 40px; font-size: 1.5rem; background: #2ed573; color: white; border: none; border-radius: 50px; cursor: pointer; box-shadow: 0 4px 15px rgba(46, 213, 115, 0.4); }
+
+        /* 遊戲主畫面 */
+        .image-box { width: 220px; height: 220px; margin: 15px auto; background: #f8f9fa; border-radius: 15px; overflow: hidden; border: 4px solid #1e90ff; display: flex; align-items: center; justify-content: center; }
+        #target-image { width: 100%; height: 100%; object-fit: contain; }
+        
+        #replay-btn { margin: 10px auto; padding: 10px 20px; font-size: 1rem; background: #ffa502; color: white; border: none; border-radius: 25px; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 8px; box-shadow: 0 3px 10px rgba(255, 165, 2, 0.3); }
+        #replay-btn:active { transform: scale(0.95); }
+
+        video { width: 100%; border-radius: 10px; background: #000; transform: scaleX(-1); margin-top: 10px; }
+        canvas { display: none; }
+        .info { font-size: 1.1rem; margin: 10px 0; color: #555; }
+        .target { font-size: 2.2rem; color: #ff4757; font-weight: bold; margin: 5px 0; }
+        #status { height: 45px; font-weight: bold; font-size: 1.3rem; margin-top: 10px; }
+        .btn-reload { padding: 10px 20px; background: #1e90ff; color: white; border: none; border-radius: 8px; cursor: pointer; margin-top: 15px; font-size: 0.9rem; }
+    </style>
+</head>
+<body>
+
+<div id="container">
+    <h2>QR Code 影音答題遊戲</h2>
+
+    <div id="start-screen">
+        <p style="color:#7f8c8d; margin-bottom: 20px;">歡迎來到動物識字遊戲！<br>點擊下方按鈕啟動</p>
+        <button id="start-btn" onclick="startGame()">開始遊戲</button>
+    </div>
+
+    <div id="game-content" style="display:none;">
+        <div class="info">第 <span id="q-num">1</span> / 10 題</div>
+        <div class="image-box">
+            <img id="target-image" src="" alt="題目圖片">
+        </div>
+
+        <button id="replay-btn" onclick="playSound()">
+            <span>🔊</span> 重播題目叫聲
+        </button>
+
+        <div class="target" id="target-label">準備中...</div>
+        
+        <video id="video" autoplay playsinline></video>
+        <canvas id="canvas"></canvas>
+
+        <div class="info">目前分數：<span id="score" class="score">0</span></div>
+        <div id="status">準備中...</div>
+        <button class="btn-reload" onclick="location.reload()">重新開始</button>
+    </div>
+</div>
+
+<script>
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const statusText = document.getElementById('status');
+    const scoreText = document.getElementById('score');
+    const qNumText = document.getElementById('q-num');
+    const targetLabelText = document.getElementById('target-label');
+    const targetImg = document.getElementById('target-image');
+    const startScreen = document.getElementById('start-screen');
+    const gameContent = document.getElementById('game-content');
+
+    // 遊戲狀態與相機串流變數
+    let score = 0;
+    let currentQuestion = 1;
+    let targetNum = 0;
+    let isProcessing = false;
+    let cameraStream = null; // --- 新增：用來儲存相機串流的變數 ---
+
+    // 誤報過濾器
+    let lastScanData = ""; 
+    let confirmCount = 0;
+
+    const animalMap = {
+        "1": { name: "狗", url: "https://raw.githubusercontent.com/u11307008-leb/QR/main/1.png", audio: "https://raw.githubusercontent.com/u11307008-leb/QR/d53d285acb2f05a512921d7c9a9e228841cf22f8/1.mp3" },
+        "2": { name: "貓", url: "https://raw.githubusercontent.com/u11307008-leb/QR/main/2.png", audio: "https://raw.githubusercontent.com/u11307008-leb/QR/d53d285acb2f05a512921d7c9a9e228841cf22f8/2.mp3" },
+        "3": { name: "牛", url: "https://raw.githubusercontent.com/u11307008-leb/QR/main/3.png", audio: "https://raw.githubusercontent.com/u11307008-leb/QR/d53d285acb2f05a512921d7c9a9e228841cf22f8/3.mp3" },
+        "4": { name: "羊", url: "https://raw.githubusercontent.com/u11307008-leb/QR/main/4.png", audio: "https://raw.githubusercontent.com/u11307008-leb/QR/d53d285acb2f05a512921d7c9a9e228841cf22f8/4.mp3" }
+    };
+
+    const feedbackMap = {
+        correct: "https://raw.githubusercontent.com/u11307008-leb/QR/65c3ea0b5d906182c4f21c75c2d1dcb8b4535e52/correct.mp3",
+        incorrect: "https://raw.githubusercontent.com/u11307008-leb/QR/65c3ea0b5d906182c4f21c75c2d1dcb8b4535e52/wrong.mp3"
+    };
+
+    const preloadedAudios = {};
+    const feedbackAudios = {};
+
+    function startGame() {
+        startScreen.style.display = "none";
+        gameContent.style.display = "block";
+        
+        for (let key in animalMap) {
+            const audio = new Audio();
+            audio.src = animalMap[key].audio;
+            audio.load();
+            preloadedAudios[key] = audio;
+        }
+        for (let key in feedbackMap) {
+            const audio = new Audio();
+            audio.src = feedbackMap[key];
+            audio.load();
+            feedbackAudios[key] = audio;
+        }
+
+        initCamera();
+        nextQuestion();
+    }
+
+    function initCamera() {
+        navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } }).then(stream => {
+            cameraStream = stream; // --- 儲存串流 ---
+            video.srcObject = stream;
+            video.play();
+            requestAnimationFrame(tick);
+        }).catch(err => alert("相機啟動失敗，請檢查權限"));
+    }
+
+    // --- 新增：關閉相機的函式 ---
+    function stopCamera() {
+        if (cameraStream) {
+            cameraStream.getTracks().forEach(track => track.stop()); // 停止所有軌道
+            video.srcObject = null; // 清除影像來源
+            cameraStream = null;
+            console.log("相機已關閉");
+        }
+    }
+
+    function playSound() {
+        const sound = preloadedAudios[targetNum.toString()];
+        if (sound) { sound.currentTime = 0; sound.play(); }
+    }
+
+    function playFeedbackSound(type) {
+        const sound = feedbackAudios[type];
+        if (sound) { sound.currentTime = 0; sound.play(); }
+    }
+
+    function nextQuestion() {
+        // --- 判斷遊戲結束 ---
+        if (currentQuestion > 10) {
+            stopCamera(); // 結束時立即關閉相機
+            targetLabelText.innerText = "🎊 遊戲結束！";
+            targetImg.parentElement.style.display = "none";
+            document.getElementById('replay-btn').style.display = "none";
+            video.style.display = "none"; // 隱藏影片黑框
+            statusText.innerText = `最終總分：${score}`;
+            return;
+        }
+        
+        confirmCount = 0;
+        lastScanData = "";
+        isProcessing = false;
+
+        targetNum = Math.floor(Math.random() * 4) + 1; 
+        const selected = animalMap[targetNum.toString()];
+        
+        targetLabelText.innerText = `請掃描：${selected.name}`;
+        qNumText.innerText = currentQuestion;
+        targetImg.src = selected.url;
+
+        setTimeout(playSound, 500);
+        statusText.style.color = "#7f8c8d";
+        statusText.innerText = "請將 QR Code 對準鏡頭";
+    }
+
+    function tick() {
+        // 只有在相機開啟且遊戲進行中才掃描
+        if (cameraStream && video.readyState === video.HAVE_ENOUGH_DATA && !isProcessing && currentQuestion <= 10) {
+            canvas.height = video.videoHeight;
+            canvas.width = video.videoWidth;
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            const code = jsQR(imageData.data, imageData.width, imageData.height);
+
+            if (code) {
+                if (code.data === lastScanData) {
+                    confirmCount++;
+                } else {
+                    lastScanData = code.data;
+                    confirmCount = 1;
+                }
+
+                if (confirmCount >= 3) {
+                    handleScan(code.data);
+                    confirmCount = 0;
+                }
+            } else {
+                confirmCount = 0;
+            }
+        }
+        // 如果相機還開著，就繼續下一幀
+        if (cameraStream) {
+            requestAnimationFrame(tick);
+        }
+    }
+
+    function handleScan(data) {
+        if (isProcessing) return;
+        isProcessing = true;
+        
+        const scannedData = animalMap[data];
+        const scannedName = scannedData ? scannedData.name : `未知(${data})`;
+
+        if (data === targetNum.toString()) {
+            playFeedbackSound('correct');
+            score += 10;
+            statusText.style.color = "#2ed573";
+            statusText.innerText = `✅ 正確！這是 ${scannedName}`;
+        } else {
+            playFeedbackSound('incorrect');
+            statusText.style.color = "#ff4757";
+            statusText.innerText = `❌ 錯誤！你掃到了 ${scannedName}`;
+        }
+
+        scoreText.innerText = score;
+        
+        setTimeout(() => {
+            currentQuestion++;
+            nextQuestion();
+        }, 1500);
+    }
+</script>
+
+</body>
+</html>
